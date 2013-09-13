@@ -23,6 +23,22 @@
 import serial
 import os, sys, getopt
 import math
+import time
+import signal
+
+# options
+debug = False
+verbose = False
+quiet = False
+loop = False
+address = 0x00
+channel = -1
+voltage = -1.0
+current = -1.0
+output = -1
+
+# arguments
+baud = 9600
 
 def usage():
     name = os.path.basename(sys.argv[0])
@@ -32,6 +48,7 @@ def usage():
     print "  -d: enable debug mode"
     print "  -V: verbose output"
     print "  -q: quiet"
+    print "  -l: loop endlessly (break with SIGINT or ctrl-c)"
     print "  -c <channel>: 1, 2 or 3 for triple output supply"
     print "  -v <voltage>: voltage in millivolts"
     print "  -i <current>: current in milliamps"
@@ -43,21 +60,104 @@ def usage():
     #print "  -n <independent/series/parallel>: select output relationships"
     print
 
-# options
-debug = False
-verbose = False
-quiet = False
-address = 0x20
-channel = -1
-voltage = -1.0
-current = -1.0
-output = -1
 
-# arguments
-baud = 9600
+def generate_output_buf(conn, channel, voltage, current, output):
+    if not conn.isOpen():
+        print "Could not open %s" % tty
+        sys.exit(1)
+
+    # new message header
+    output_buf = chr(0xaa) + chr(address)
+
+    # iterate over the three channels
+    for i in range(1, 4):
+
+        # each channel (starting from 1 and going to 3) has 4 bytes set aside for
+        # programming voltage and current (more on that below). Fill in the
+        # supplied per-channel data, otherwise zero-fill
+        # FIXME better to read the target values and re-use them instead of zero-filling
+        if (channel != i):
+            output_buf += chr(0x00) + chr(0x00) + chr(0x00) + chr(0x00)
+            continue
+
+        # voltage is split into two bytes. The first byte is a multiple of 2.56V. E.g.
+        # to get 5.12V output the first voltage byte would be 2, and the second byte 0.
+        # The second voltage byte is in hundredths of a volt (centivolts). E.g. to get
+        # 0.03V the first byte would be 0 and the second byte would be 3
+
+        if (voltage > -1):
+            voltage /= 1000.0
+            v1 = int(voltage / 2.56)
+            v2 = int(math.ceil(voltage % 2.56 * 100))
+            output_buf += chr(v1) + chr(v2)
+        else:
+            # FIXME should read the target value and re-use that value, not zero-fill
+            output_buf += chr(0x00) + chr(0x00)
+
+        # current is similarly split into two bytes. The first byte is a multiple of
+        # 0.256A. E.g. to get 0.512A output the first current byte would be 2, and the
+        # second byte 0. The second current byte is in thousanths of an amp
+        # (milliamps). E.g. to get 0.003A the first byte would be 0 and the second byte
+        # would be 3
+
+        if (current > -1):
+            current /= 1000.0
+            c1 = int(current / 0.256)
+            c2 = int(math.ceil(current % 0.256 * 1000))
+            output_buf += chr(c1) + chr(c2)
+        else:
+            # FIXME should read the target value and re-use that value, not zero-fill
+            output_buf += chr(0x00) + chr(0x00)
+
+
+    # byte 14 is RESERVED which is why we program two bytes here, for those of
+    # you keeping count. Byte 15 is the output control byte
+    # FIXME in The Future we can program more than one channel at once, so we
+    # need to make this bitmask less dumb and OR it with the target value
+    if (output > -1):
+        output_buf += chr(0x00) + chr(output)
+    else:
+        # FIXME should read the target value and re-use that value, not zero-fill
+        output_buf += chr(0x00) + chr(0x00)
+
+    # FIXME zero-fill the last 8 bytes since they are non-critical
+    output_buf += chr(0x00) + chr(0x00) + chr(0x00) + chr(0x00) + \
+            chr(0x00) + chr(0x00) + chr(0x00) + chr(0x00)
+
+    return output_buf
+
+
+def program_supply_and_print(conn, channel, voltage, current, output, output_buf, verbose):
+    conn.write(output_buf)
+    input_buf = conn.read(24)
+
+    current = (ord(input_buf[4]) * 256 + ord(input_buf[5]))
+
+    if verbose == True:
+        print "time (sec), voltage (mV), current (mA), power (mW)"
+
+    print "%.3f, %d, %d, %d" % ((time.time() - start_time), voltage, current, voltage * current / 1000)
+
+    if (verbose):
+        print "byte #\toutput\tinput"
+        for i in range(0, 24):
+            print "%d\t%d\t%d" % (i, ord(output_buf[i]), ord(input_buf[i]))
+        print
+
+
+def signal_handler(signal, frame):
+    global conn
+    conn.close()
+    print "\nSIGINT caught"
+    sys.exit(0)
+
+
+# main program
+
+signal.signal(signal.SIGINT, signal_handler)
 
 try:
-    opts, args = getopt.getopt(sys.argv[1:], "hdVqa:c:v:i:o:")
+    opts, args = getopt.getopt(sys.argv[1:], "hdVqla:c:v:i:o:")
 
 except getopt.GetoptError as err:
     print str(err) # will print something like "option -a not recognized"
@@ -72,6 +172,8 @@ for o, a in opts:
         verbose = True
     elif o == "-q":
         quiet = True
+    elif o == "-l":
+        loop = True
     elif o == "-a":
         address = int(a, 16)
     elif o == "-c":
@@ -112,72 +214,12 @@ conn = serial.Serial(
 	bytesize=serial.EIGHTBITS
 )
 
-if not conn.isOpen():
-    print "Could not open %s" % tty
-    sys.exit(1)
+start_time = time.time()
 
-# new message header
-buf = chr(0xaa) + chr(address)
+output_buf = generate_output_buf(conn, channel, voltage, current, output)
 
-# iterate over the three channels
-for i in range(1, 4):
+program_supply_and_print(conn, channel, voltage, current, output, output_buf, verbose)
+while loop == True:
+    program_supply_and_print(conn, channel, voltage, current, output, output_buf, verbose)
 
-    # each channel (starting from 1 and going to 3) has 4 bytes set aside for
-    # programming voltage and current (more on that below). Fill in the
-    # supplied per-channel data, otherwise zero-fill
-    # FIXME better to read the target values and re-use them instead of zero-filling
-    if (channel != i):
-        buf += chr(0x00) + chr(0x00) + chr(0x00) + chr(0x00)
-        continue
-
-    # voltage is split into two bytes. The first byte is a multiple of 2.56V. E.g.
-    # to get 5.12V output the first voltage byte would be 2, and the second byte 0.
-    # The second voltage byte is in hundredths of a volt (centivolts). E.g. to get
-    # 0.03V the first byte would be 0 and the second byte would be 3
-
-    if (voltage > -1):
-        voltage /= 1000.0
-        v1 = int(voltage / 2.56)
-        v2 = int(math.ceil(voltage % 2.56 * 100))
-        buf += chr(v1) + chr(v2)
-    else:
-        # FIXME should read the target value and re-use that value, not zero-fill
-        buf += chr(0x00) + chr(0x00)
-
-    # current is similarly split into two bytes. The first byte is a multiple of
-    # 0.256A. E.g. to get 0.512A output the first current byte would be 2, and the
-    # second byte 0. The second current byte is in thousanths of an amp
-    # (milliamps). E.g. to get 0.003A the first byte would be 0 and the second byte
-    # would be 3
-
-    if (current > -1):
-        current /= 1000.0
-        c1 = int(current / 0.256)
-        c2 = int(math.ceil(current % 0.256 * 1000))
-        buf += chr(c1) + chr(c2)
-    else:
-        # FIXME should read the target value and re-use that value, not zero-fill
-        buf += chr(0x00) + chr(0x00)
-
-
-# byte 14 is RESERVED which is why we program two bytes here, for those of
-# you keeping count. Byte 15 is the output control byte
-# FIXME in The Future we can program more than one channel at once, so we
-# need to make this bitmask less dumb and OR it with the target value
-if (output > -1):
-    buf += chr(0x00) + chr(output)
-else:
-    # FIXME should read the target value and re-use that value, not zero-fill
-    buf += chr(0x00) + chr(0x00)
-
-# FIXME zero-fill the last 8 bytes since they are non-critical
-buf += chr(0x00) + chr(0x00) + chr(0x00) + chr(0x00) + \
-        chr(0x00) + chr(0x00) + chr(0x00) + chr(0x00)
-
-conn.write(buf)
 conn.close()
-
-if (verbose):
-    print "byte #\tvalue"
-    for i, c in enumerate(buf):
-        print i, '\t', ord(c)
