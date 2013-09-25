@@ -1,0 +1,18 @@
+# -*- coding: utf-8 -*-
+# vim: tabstop=8 expandtab shiftwidth=4 softtabstop=4
+
+/dev/ttyS5:
+    baud: 19200
+    1:
+        voltage: 5170
+        current: 4000
+        output : off
+    2:
+        voltage: 4750
+        current: 3330
+        output : off
+    3:
+        voltage: 3000
+        current: 1000
+        output : off
+
