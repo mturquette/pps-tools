@@ -236,6 +236,7 @@ if not tty in config:
     sys.exit(1)
 
 supply = config[tty]
+baud = supply["baud"]
 
 conn = serial.Serial(
     port=tty,
@@ -244,6 +245,10 @@ conn = serial.Serial(
     stopbits=serial.STOPBITS_ONE,
     bytesize=serial.EIGHTBITS
 )
+
+if (verbose):
+    print "port: ", conn.port
+    print "baud: ", conn.baudrate
 
 start_time = time.time()
 
