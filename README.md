@@ -12,6 +12,17 @@ non-exhaustive list:
 * [Tenma 72-5678](http://www.newark.com/tenma/72-8795/programmable-dc-power-supply-32v/dp/32T0685)
 * [Circuit Specialists CSIPPS55T](http://www.circuitspecialists.com/programmable-bench-power-supply-csipps55t.html)
 
+## Dependencies
+
+* Python <= 2.7
+* Python YAML module
+* Pyserial module
+
+Install with:
+```
+sudo apt-get install python-yaml python-serial
+```
+
 ## Theory of (entirely stupid) operation
 
 The firmware on these supplies is terrible. There is no read method for
